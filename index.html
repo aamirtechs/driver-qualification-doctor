@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Driver Qualification Doctor - AamirTechs</title>
+<style>
+:root{--navy:#0b1f3a;--gold:#d4a72c;--bg:#f6f8fb;--ink:#1c2733;--muted:#5b6b7c;--line:#d9e1ea}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--navy);color:#fff;padding:28px 20px;border-bottom:4px solid var(--gold)}
+header .wrap{max-width:880px;margin:0 auto}
+header h1{margin:0 0 6px;font-size:1.6rem}
+header p{margin:0;color:#c8d4e4}
+main{max-width:880px;margin:24px auto;padding:0 20px}
+.card{background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(11,31,58,.08)}
+label{display:block;font-weight:600;margin:14px 0 6px}
+.card>label:first-child{margin-top:0}
+textarea{width:100%;min-height:180px;padding:10px;border:1px solid var(--line);border-radius:8px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:.85rem}
+input[type=text],input[type=number],select{padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-size:.95rem;width:100%}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:4px}
+.grid label{margin:0 0 6px}
+.row{display:flex;flex-wrap:wrap;gap:10px;margin-top:16px}
+button{background:var(--navy);color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:.95rem;cursor:pointer}
+button.alt{background:#fff;color:var(--navy);border:1px solid var(--navy)}
+button.gold{background:var(--gold);color:#0b1f3a;font-weight:600}
+pre{background:#0b1f3a;color:#eef3f9;border-radius:8px;padding:16px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;min-height:60px;font-size:.85rem}
+footer{max-width:880px;margin:0 auto 32px;padding:0 20px;color:var(--muted);font-size:.9rem}
+footer a{color:var(--navy)}
+.hint{color:var(--muted);font-size:.85rem;margin-top:6px;font-weight:400}
+</style>
+</head>
+<body>
+<header><div class="wrap"><h1>Driver Qualification Doctor</h1><p>Audit a driver qualification file CSV export for missing DQ file items, expired CDL or medical certificates, a stale MVR, an overdue annual review, a late previous-employer inquiry, and drivers dispatched while expired.</p></div></header>
+<main><div class="card">
+<label for="file">Input CSV file</label>
+<input type="file" id="file" accept=".csv,text/csv">
+<label for="input">Or paste the CSV</label>
+<textarea id="input" spellcheck="false" placeholder="Paste a driver qualification file CSV export here, or load the sample."></textarea>
+<label>Options</label>
+<div class="grid">
+<div><label for="opt-expiry">Expiry days <span class="hint">(--expiry-days)</span></label><input type="number" id="opt-expiry" step="1" value="30"></div>
+<div><label for="opt-mvr">MVR days <span class="hint">(--mvr-days)</span></label><input type="number" id="opt-mvr" step="1" value="365"></div>
+<div><label for="opt-asof">As of date <span class="hint">(--as-of)</span></label><input type="text" id="opt-asof" value="2026-11-18"></div>
+</div>
+<div class="row"><button class="gold" id="run" type="button">Run check</button><button class="alt" id="sample" type="button">Load sample</button><button class="alt" id="sample-clean" type="button">Load clean sample</button><button class="alt" id="sample-warnings" type="button">Load warnings-only sample</button><button class="alt" id="download" type="button">Download report</button></div>
+<label for="out">Report</label>
+<pre id="out">Your report will appear here.</pre>
+</div></main>
+<footer>
+<p>Built by AamirTechs. <a href="https://aamirtechs.github.io/">All tools</a> | <a href="https://github.com/aamirtechs/driver-qualification-doctor">Source</a></p>
+<p>Privacy: this tool runs 100% in your browser, nothing is uploaded.</p>
+</footer>
+<script id="core">
+// Pure logic port of zendesk_user_doctor.py. No DOM access in this block.
+function pyRepr(v) {
+  if (v === null || v === undefined) return "None";
+  if (typeof v === "string") {
+    var hasSingle = v.indexOf("'") >= 0, hasDouble = v.indexOf('"') >= 0;
+    var quote = (hasSingle && !hasDouble) ? '"' : "'";
+    var out = "";
+    for (var i = 0; i < v.length; i++) {
+      var ch = v[i], code = v.charCodeAt(i);
+      if (ch === "\\") out += "\\\\";
+      else if (ch === quote) out += "\\" + quote;
+      else if (ch === "\n") out += "\\n";
+      else if (ch === "\r") out += "\\r";
+      else if (ch === "\t") out += "\\t";
+      else if (code < 32 || code === 127) out += "\\x" + ("0" + code.toString(16)).slice(-2);
+      else out += ch;
+    }
+    return quote + out + quote;
+  }
+  return String(v);
+}
+function parseCsvRows(text) {
+  text = String(text == null ? "" : text).replace(/^\uFEFF/, "");
+  var rows = [], row = [], field = "", inQuotes = false, atFieldStart = true, i, ch;
+  for (i = 0; i < text.length; i++) {
+    ch = text[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += ch;
+    } else if (ch === '"' && atFieldStart) { inQuotes = true; atFieldStart = false; }
+    else if (ch === ",") { row.push(field); field = ""; atFieldStart = true; }
+    else if (ch === "\r") { /* handled by \n; a lone \r also ends the row below */ if (text[i + 1] !== "\n") { row.push(field); field = ""; rows.push(row); row = []; atFieldStart = true; } }
+    else if (ch === "\n") { row.push(field); field = ""; rows.push(row); row = []; atFieldStart = true; }
+    else { field += ch; atFieldStart = false; }
+  }
+  if (field !== "" || row.length || inQuotes) { row.push(field); rows.push(row); }
+  return rows;
+}
+function daysInMonth(y, mo) {
+  return [31, (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0)) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+}
+function makeTs(y, mo, d, hh, mi, ss, micro, offsetMin) {
+  if (mo < 1 || mo > 12 || d < 1 || d > daysInMonth(y, mo)) return null;
+  if (hh > 23 || mi > 59 || ss > 59) return null;
+  if (offsetMin === null || offsetMin === undefined) offsetMin = 0;
+  if (offsetMin < -1439 || offsetMin > 1439) return null;
+  var wallUs = (((Date.UTC(y, mo - 1, d, hh, mi, ss) / 1000) * 1000000) + micro);
+  return { us: wallUs - offsetMin * 60000000, wallUs: wallUs };
+}
+function parseTimestamp(text) {
+  if (text === null || text === undefined) return null;
+  text = String(text).trim();
+  if (!text) return null;
+  var candidate = text;
+  var m;
+  // datetime.fromisoformat path (with trailing Z handled like Python).
+  var isoText = candidate;
+  if (/[Zz]$/.test(isoText)) isoText = isoText.slice(0, -1) + "+00:00";
+  m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?([+-]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?)?$/.exec(isoText);
+  if (m && (m[4] !== undefined || m[8] === undefined)) {
+    var micro = 0;
+    if (m[7]) micro = parseInt((m[7] + "000000").slice(0, 6), 10);
+    var off = 0;
+    if (m[8]) {
+      var om = /^([+-])(\d{2}):(\d{2})/.exec(m[8]);
+      off = (parseInt(om[2], 10) * 60 + parseInt(om[3], 10)) * (om[1] === "-" ? -1 : 1);
+    }
+    var ts = makeTs(+m[1], +m[2], +m[3], m[4] ? +m[4] : 0, m[5] ? +m[5] : 0, m[6] ? +m[6] : 0, micro, off);
+    if (ts) return ts;
+  }
+  // strptime fallback formats, in the Python order.
+  var fmts = [
+    [/^(\d{4})-(\d{1,2})-(\d{1,2})T(\d{1,2}):(\d{1,2}):(\d{1,2})$/, "ymd"],
+    [/^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{1,2}):(\d{1,2})$/, "ymd"],
+    [/^(\d{4})-(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{1,2})$/, "ymd"],
+    [/^(\d{4})-(\d{1,2})-(\d{1,2})$/, "ymd"],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{1,2})$/, "dmy"],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4}) (\d{1,2}):(\d{1,2})$/, "mdy"],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, "dmy"],
+    [/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, "mdy"]
+  ];
+  for (var i = 0; i < fmts.length; i++) {
+    m = fmts[i][0].exec(candidate);
+    if (!m) continue;
+    var y, mo, d;
+    if (fmts[i][1] === "ymd") { y = +m[1]; mo = +m[2]; d = +m[3]; }
+    else if (fmts[i][1] === "dmy") { d = +m[1]; mo = +m[2]; y = +m[3]; }
+    else { mo = +m[1]; d = +m[2]; y = +m[3]; }
+    var base = fmts[i][1] === "ymd" ? 4 : 4;
+    var hh = m[base] !== undefined ? +m[base] : 0;
+    var mi = m[base + 1] !== undefined ? +m[base + 1] : 0;
+    var ss = m[base + 2] !== undefined ? +m[base + 2] : 0;
+    var t2 = makeTs(y, mo, d, hh, mi, ss, 0, 0);
+    if (t2) return t2;
+  }
+  return null;
+}
+function fmtDate(ts) {
+  var dt = new Date(ts.wallUs / 1000);
+  function p(n, w) { var s = String(n); while (s.length < w) s = "0" + s; return s; }
+  return p(dt.getUTCFullYear(), 4) + "-" + p(dt.getUTCMonth() + 1, 2) + "-" + p(dt.getUTCDate(), 2);
+}
+function fmtDateTime(ts) {
+  var dt = new Date(ts.wallUs / 1000);
+  function p(n, w) { var s = String(n); while (s.length < w) s = "0" + s; return s; }
+  return fmtDate(ts) + " " + p(dt.getUTCHours(), 2) + ":" + p(dt.getUTCMinutes(), 2);
+}
+function fmt1(x) { return x.toFixed(1); }
+var YES_VALUES = { "yes": 1, "y": 1, "true": 1, "1": 1, "received": 1, "on file": 1, "present": 1, "filed": 1, "dispatched": 1, "active": 1 };
+var NO_VALUES = { "no": 1, "n": 1, "false": 1, "0": 1, "not received": 1, "missing": 1, "not dispatched": 1, "off duty": 1 };
+function parseYesNo(text) {
+  if (text === null || text === undefined) return null;
+  var value = String(text).trim().toLowerCase();
+  if (!value) return null;
+  if (YES_VALUES[value]) return true;
+  if (NO_VALUES[value]) return false;
+  return null;
+}
+function F(driver, rule, severity, message) { return { driver: driver, rule: rule, severity: severity, message: message }; }
+function findingStr(f) { return f.severity.toUpperCase() + " [" + f.rule + "] " + f.driver + ": " + f.message; }
+function findColumn(headerSet, names) {
+  for (var i = 0; i < names.length; i++) if (headerSet[names[i]] !== undefined) return names[i];
+  return null;
+}
+var ANNUAL_REVIEW_DAYS = 365, EMPLOYER_INQUIRY_DAYS = 30;
+window.runTool = function (inputText, options) {
+  options = options || {};
+  var expiryDays = options.expiryDays === undefined || options.expiryDays === "" ? 30 : parseInt(options.expiryDays, 10);
+  var mvrDays = options.mvrDays === undefined || options.mvrDays === "" ? 365 : parseInt(options.mvrDays, 10);
+  var asOfText = options.asOf === undefined || options.asOf === "" ? "2026-11-18" : String(options.asOf);
+  var asOf = parseTimestamp(asOfText);
+  if (asOf === null) return "error: --as-of " + pyRepr(asOfText) + " is not a readable date\n";
+  var rows = parseCsvRows(inputText || "");
+  if (!rows.length) return "error: input is empty, no header row found\n";
+  var header = rows[0].map(function (n) { return String(n).trim(); });
+  var headerSet = {};
+  header.forEach(function (n, i) { headerSet[n] = i; });
+  var idColumn = findColumn(headerSet, ["driver_id", "id", "driver"]);
+  if (idColumn === null) return "error: input has no driver_id or id column (header is: " + header.join(", ") + ")\n";
+  var cdlExpiryColumn = findColumn(headerSet, ["cdl_expiry", "cdl_expiration", "cdl_expires", "cdl_expiry_date"]);
+  if (cdlExpiryColumn === null) return "error: input has no cdl_expiry column (header is: " + header.join(", ") + ")\n";
+  var medicalColumn = findColumn(headerSet, ["medical_expiry", "medical_certificate_expiry", "medical_expires", "med_cert_expiry", "medical_certificate_expiration"]);
+  if (medicalColumn === null) return "error: input has no medical_expiry column (header is: " + header.join(", ") + ")\n";
+  var nameColumn = findColumn(headerSet, ["driver_name", "name", "full_name"]);
+  var cdlColumn = findColumn(headerSet, ["cdl_number", "cdl", "cdl_no", "license_number"]);
+  var mvrColumn = findColumn(headerSet, ["mvr_date", "mvr", "last_mvr_date", "mvr_inquiry_date"]);
+  var reviewColumn = findColumn(headerSet, ["annual_review_date", "review_date", "last_annual_review", "annual_review"]);
+  var roadTestColumn = findColumn(headerSet, ["road_test_date", "road_test", "last_road_test", "road_test_certificate_date"]);
+  var inquiryColumn = findColumn(headerSet, ["prev_employer_inquiry_date", "previous_employer_inquiry_date", "employer_inquiry_date", "prev_employer_inquiry"]);
+  var hireColumn = findColumn(headerSet, ["hire_date", "hired_date", "employment_date", "date_of_hire"]);
+  var dispatchedColumn = findColumn(headerSet, ["dispatched", "is_dispatched", "currently_dispatched", "on_dispatch"]);
+  function cell(cells, col) { return col === null ? "" : (cells[col] !== undefined ? cells[col] : ""); }
+  var findings = [], drivers = [];
+  var seenIds = {};
+  for (var r = 1; r < rows.length; r++) {
+    var row = rows[r];
+    var lineNumber = r + 1;
+    if (!row.length || row.every(function (c) { return !String(c).trim(); })) continue;
+    if (row.length !== header.length) {
+      findings.push(F("row " + lineNumber, "malformed-row", "error",
+        "row has " + row.length + " fields but the header has " + header.length + ", so the row was skipped"));
+      continue;
+    }
+    var cells = {};
+    header.forEach(function (n, i) { cells[n] = String(row[i]).trim(); });
+    var driverId = cells[idColumn];
+    if (!driverId) {
+      findings.push(F("row " + lineNumber, "missing-driver-id", "error",
+        "row has no driver id, so the driver cannot be matched to a DQ file"));
+      driverId = "row " + lineNumber;
+    }
+    if (seenIds[driverId]) {
+      findings.push(F(driverId, "duplicate-driver-id", "error", "driver id appears more than once in the export"));
+    } else seenIds[driverId] = true;
+    function parseDateCol(column, label) {
+      var raw = column !== null ? cells[column] : "";
+      if (!raw) return [null, raw];
+      var parsed = parseTimestamp(raw);
+      if (parsed === null) {
+        findings.push(F(driverId, "invalid-date", "error", label + " date " + pyRepr(raw) + " is not a readable date"));
+      }
+      return [parsed, raw];
+    }
+    var cdlExpiry = parseDateCol(cdlExpiryColumn, "CDL expiry");
+    var medicalExpiry = parseDateCol(medicalColumn, "medical certificate expiry");
+    var mvrDate = parseDateCol(mvrColumn, "MVR");
+    var reviewDate = parseDateCol(reviewColumn, "annual review");
+    var roadTestDate = parseDateCol(roadTestColumn, "road test");
+    var inquiryDate = parseDateCol(inquiryColumn, "previous-employer inquiry");
+    var hireDate = parseDateCol(hireColumn, "hire");
+    if (hireDate[0] !== null && hireDate[0].us > asOf.us) {
+      findings.push(F(driverId, "future-timestamp", "error",
+        "hire date " + fmtDateTime(hireDate[0]) + " is after the as-of date " + fmtDateTime(asOf)));
+    }
+    if (cdlColumn !== null && !cells[cdlColumn]) {
+      findings.push(F(driverId, "missing-cdl-number", "error", "driver has no CDL number recorded, so the license cannot be checked"));
+    }
+    if (!medicalExpiry[1]) {
+      findings.push(F(driverId, "missing-medical-certificate", "error",
+        "driver has no medical certificate expiry recorded, so the DQ file has no medical certificate"));
+    }
+    if (mvrColumn !== null && !cells[mvrColumn]) {
+      findings.push(F(driverId, "missing-mvr", "error", "driver has no MVR date recorded, so the annual MVR inquiry is missing from the DQ file"));
+    }
+    if (reviewColumn !== null && !cells[reviewColumn]) {
+      findings.push(F(driverId, "missing-annual-review", "error", "driver has no annual review date recorded, so the annual review is missing from the DQ file"));
+    }
+    if (roadTestColumn !== null && !cells[roadTestColumn]) {
+      findings.push(F(driverId, "missing-road-test", "error", "driver has no road test date recorded, so the road test certificate is missing from the DQ file"));
+    }
+    if (inquiryColumn !== null && !cells[inquiryColumn]) {
+      findings.push(F(driverId, "missing-employer-inquiry", "error", "driver has no previous-employer inquiry date recorded, so the inquiry is missing from the DQ file"));
+    }
+    drivers.push({
+      id: driverId, name: cell(cells, nameColumn),
+      cdlExpiry: cdlExpiry[0], medicalExpiry: medicalExpiry[0], mvrDate: mvrDate[0],
+      reviewDate: reviewDate[0], roadTestDate: roadTestDate[0], inquiryDate: inquiryDate[0],
+      hireDate: hireDate[0],
+      dispatched: dispatchedColumn !== null ? parseYesNo(cells[dispatchedColumn]) : null
+    });
+  }
+  drivers.forEach(function (driver) {
+    var driverId = driver.id;
+    var cdlExpired = false, medicalExpired = false;
+    if (driver.cdlExpiry !== null) {
+      var ageDays = (asOf.us - driver.cdlExpiry.us) / 1000000 / 86400.0;
+      if (driver.cdlExpiry.us < asOf.us) {
+        cdlExpired = true;
+        findings.push(F(driverId, "cdl-expired", "error",
+          "CDL expired on " + fmtDate(driver.cdlExpiry) + ", " + fmt1(ageDays) + " days ago"));
+      } else if (ageDays >= -expiryDays) {
+        findings.push(F(driverId, "cdl-expiring-soon", "warning",
+          "CDL expires on " + fmtDate(driver.cdlExpiry) + ", in " + fmt1(Math.abs(-ageDays)) + " days"));
+      }
+    }
+    if (driver.medicalExpiry !== null) {
+      var mAge = (asOf.us - driver.medicalExpiry.us) / 1000000 / 86400.0;
+      if (driver.medicalExpiry.us < asOf.us) {
+        medicalExpired = true;
+        findings.push(F(driverId, "medical-expired", "error",
+          "medical certificate expired on " + fmtDate(driver.medicalExpiry) + ", " + fmt1(mAge) + " days ago"));
+      } else if (mAge >= -expiryDays) {
+        findings.push(F(driverId, "medical-expiring-soon", "warning",
+          "medical certificate expires on " + fmtDate(driver.medicalExpiry) + ", in " + fmt1(Math.abs(-mAge)) + " days"));
+      }
+    }
+    if (driver.mvrDate !== null) {
+      var mvrAge = (asOf.us - driver.mvrDate.us) / 1000000 / 86400.0;
+      if (mvrAge > mvrDays) {
+        findings.push(F(driverId, "stale-mvr", "error",
+          "MVR is " + fmt1(mvrAge) + " days old, older than the " + mvrDays + " day limit"));
+      }
+    }
+    if (driver.reviewDate !== null) {
+      var reviewAge = (asOf.us - driver.reviewDate.us) / 1000000 / 86400.0;
+      if (reviewAge > ANNUAL_REVIEW_DAYS) {
+        findings.push(F(driverId, "annual-review-overdue", "error",
+          "annual review is " + fmt1(reviewAge) + " days old, overdue past the " + ANNUAL_REVIEW_DAYS + " day annual cycle"));
+      }
+    }
+    if (driver.inquiryDate !== null && driver.hireDate !== null) {
+      var windowDays = (driver.inquiryDate.us - driver.hireDate.us) / 1000000 / 86400.0;
+      if (windowDays > EMPLOYER_INQUIRY_DAYS) {
+        findings.push(F(driverId, "employer-inquiry-late", "error",
+          "previous-employer inquiry was completed " + fmt1(windowDays) + " days after hire, past the " + EMPLOYER_INQUIRY_DAYS + " day window"));
+      }
+    }
+    if (driver.dispatched === true && (cdlExpired || medicalExpired)) {
+      var items = [];
+      if (cdlExpired) items.push("CDL");
+      if (medicalExpired) items.push("medical certificate");
+      findings.push(F(driverId, "dispatched-while-expired", "error",
+        "driver is dispatched while the " + items.join(" and ") + " " + (items.length > 1 ? "are" : "is") + " expired"));
+    }
+  });
+  var errors = findings.filter(function (f) { return f.severity === "error"; }).length;
+  var warnings = findings.length - errors;
+  var driverIdSet = {};
+  drivers.forEach(function (d) { driverIdSet[d.id] = true; });
+  var withErrors = {};
+  findings.forEach(function (f) { if (f.severity === "error" && driverIdSet[f.driver]) withErrors[f.driver] = true; });
+  var ready = drivers.filter(function (d) { return !withErrors[d.id]; }).length;
+  function countRule(rule) { return findings.filter(function (f) { return f.rule === rule; }).length; }
+  var lines = findings.map(findingStr);
+  lines.push("");
+  lines.push("Drivers: " + drivers.length + ", findings: " + findings.length + ", errors: " + errors + ", warnings: " + warnings);
+  lines.push("Ready to drive: " + ready + " of " + drivers.length + " drivers");
+  lines.push("Expired CDL: " + countRule("cdl-expired") + ", expired medical: " + countRule("medical-expired") +
+    ", CDL expiring soon: " + countRule("cdl-expiring-soon") + ", medical expiring soon: " + countRule("medical-expiring-soon") +
+    ", stale MVR: " + countRule("stale-mvr") + ", overdue review: " + countRule("annual-review-overdue") +
+    ", missing road test: " + countRule("missing-road-test") + ", missing employer inquiry: " + countRule("missing-employer-inquiry") +
+    ", late employer inquiry: " + countRule("employer-inquiry-late") + ", dispatched while expired: " + countRule("dispatched-while-expired"));
+  lines.push("");
+  lines.push("Per-driver readiness:");
+  drivers.forEach(function (d) {
+    var dErr = findings.filter(function (f) { return f.severity === "error" && f.driver === d.id; }).length;
+    var dWarn = findings.filter(function (f) { return f.severity === "warning" && f.driver === d.id; }).length;
+    lines.push(d.id + " " + (d.name ? "(" + d.name + ")" : "") + ": " + dErr + " errors, " + dWarn + " warnings, " + (dErr === 0 ? "READY" : "NOT READY"));
+  });
+  if (findings.length === 0) { lines.push(""); lines.push("All drivers clean."); }
+  return lines.join("\n") + "\n";
+};
+</script>
+<script>
+var SAMPLE = "driver_id,driver_name,cdl_number,cdl_expiry,medical_expiry,mvr_date,annual_review_date,road_test_date,prev_employer_inquiry_date,hire_date,dispatched\nD-101,Alice Hart,CDL-1001,2027-06-30,2027-01-15,2026-06-01,2026-05-01,2024-03-01,2026-02-01,2026-01-15,no\nD-102,Bob Lane,CDL-1002,2026-10-01,2027-02-01,2026-07-01,2026-06-01,2024-05-01,2026-02-10,2026-02-01,yes\nD-103,Carla Moss,CDL-1003,2027-03-01,2026-09-15,2026-08-01,2026-07-01,2024-06-01,2026-03-01,2026-02-15,yes\nD-104,Dan Cole,CDL-1004,2027-04-01,2026-12-10,2026-09-01,2026-08-01,2024-07-01,2026-03-20,2026-03-01,no\nD-105,Erin Fox,CDL-1005,2027-05-01,2027-03-01,2025-09-01,2026-09-01,2024-08-01,2026-05-01,2026-04-01,no\nD-106,Frank Hale,CDL-1006,2027-06-01,2027-04-01,2026-10-01,2025-10-01,2024-09-01,2026-05-20,2026-05-01,no\nD-107,Grace Ives,CDL-1007,2027-07-01,2027-05-01,2026-10-15,2026-09-15,,2026-07-01,2026-06-01,no\nD-108,Hank Joss,CDL-1008,2027-08-01,2027-06-01,2026-11-01,2026-10-01,2024-11-01,,2026-07-01,no\nD-109,Ivy Kent,CDL-1009,2027-09-01,2027-07-01,2026-11-05,2026-10-05,2024-12-01,2026-03-15,2026-01-10,no\nD-110,Jack Lowe,,2027-10-01,2027-08-01,2026-11-10,2026-10-10,2025-01-01,2026-07-20,2026-07-01,no\nD-111,Kim Nash,CDL-1011,2027-11-01,,2026-11-12,2026-10-12,2025-02-01,2026-08-20,2026-08-01,no\nD-112,Leo Park,CDL-1012,2027-12-01,2027-09-01,,2026-10-15,2025-03-01,2026-10-01,2026-09-01,no\nD-113,Mia Reed,CDL-1013,2028-01-01,2027-10-01,2026-11-15,,2025-04-01,2026-10-20,2026-10-01,no\nD-114,Nate Shaw,CDL-1014,2026-09-01,2026-08-15,2026-08-01,2026-07-01,2024-10-01,2026-01-20,2026-01-01,yes\nD-115,Olga Tate,CDL-1015,2028-02-01,not-a-date,2026-11-16,2026-10-16,2025-05-01,2026-10-20,2026-10-05,no\nD-116,Pete Voss,CDL-1016,2028-03-01,2027-11-01,2026-11-17,2026-10-17,2025-06-01,2026-11-10,2026-12-05,no\nD-101,Quinn Wade,CDL-1017,2027-08-01,2027-04-01,2026-10-01,2026-09-01,2024-09-01,2026-05-20,2026-05-01,no\nD-117,Eddie Vance,CDL-1018,2027-06-01,2027-06-01,2026-10-01,2026-09-01,2024-10-01,2026-06-01,2026-05-01,no,extra-field\n,No Name Freight,CDL-1019,2027-06-01,2027-06-01,2026-10-01,2026-09-01,2024-10-01,2026-05-20,2026-05-01,no\nD-117,Rosa Diaz,CDL-1020,2027-07-01,2027-05-01,2025-11-18,2026-10-01,2024-11-01,2026-07-01,2026-06-01,no\nD-118,Sam Webb,CDL-1021,2027-08-01,2026-11-18,2026-10-15,2026-10-01,2024-12-01,2026-07-20,2026-07-01,no\nD-119,Tara Xu,CDL-1022,2027-09-01,2027-06-01,2026-11-01,2026-10-15,2025-01-15,2026-08-20,2026-08-01,yes\nD-120,Uma Yates,CDL-1023,2027-09-01,2027-06-01,2026-11-01,2026-10-15,2025-01-01,2026-01-31,2026-01-01,no\n";
+var SAMPLE_CLEAN = "driver_id,driver_name,cdl_number,cdl_expiry,medical_expiry,mvr_date,annual_review_date,road_test_date,prev_employer_inquiry_date,hire_date,dispatched\nD-301,Alice Hart,CDL-2001,2027-06-30,2027-01-15,2026-06-01,2026-05-01,2024-03-01,2026-02-01,2026-01-15,no\nD-302,Bob Lane,CDL-2002,2027-01-15,2027-02-01,2026-07-01,2026-06-01,2024-05-01,2026-02-10,2026-02-01,yes\nD-303,Carla Moss,CDL-2003,2027-03-01,2027-03-01,2026-08-01,2026-07-01,2024-06-01,2026-03-01,2026-02-15,no\nD-304,Dan Cole,CDL-2004,2027-04-01,2027-04-01,2026-09-01,2026-08-01,2024-07-01,2026-03-20,2026-03-01,no\nD-305,Erin Fox,CDL-2005,2027-05-01,2027-05-01,2026-10-01,2026-09-01,2024-08-01,2026-05-01,2026-04-01,no\n";
+var SAMPLE_WARNINGS = "driver_id,driver_name,cdl_number,cdl_expiry,medical_expiry,mvr_date,annual_review_date,road_test_date,prev_employer_inquiry_date,hire_date,dispatched\nD-401,Dan Cole,CDL-3001,2027-04-01,2026-12-10,2026-09-01,2026-08-01,2024-07-01,2026-03-20,2026-03-01,no\nD-402,Erin Fox,CDL-3002,2026-12-05,2027-03-01,2026-10-01,2026-09-01,2024-08-01,2026-05-01,2026-04-01,no\nD-403,Frank Hale,CDL-3003,2027-06-01,2026-11-25,2026-10-01,2026-09-01,2024-09-01,2026-05-20,2026-05-01,no\n";
+var inputEl = document.getElementById("input");
+var outEl = document.getElementById("out");
+var lastReport = "";
+document.getElementById("file").addEventListener("change", function (ev) {
+  var f = ev.target.files && ev.target.files[0];
+  if (!f) return;
+  var reader = new FileReader();
+  reader.onload = function () { inputEl.value = String(reader.result || ""); };
+  reader.readAsText(f);
+});
+document.getElementById("sample").addEventListener("click", function () { inputEl.value = SAMPLE; });
+document.getElementById("sample-clean").addEventListener("click", function () { inputEl.value = SAMPLE_CLEAN; });
+document.getElementById("sample-warnings").addEventListener("click", function () { inputEl.value = SAMPLE_WARNINGS; });
+document.getElementById("run").addEventListener("click", function () {
+  var options = { expiryDays: document.getElementById("opt-expiry").value, mvrDays: document.getElementById("opt-mvr").value, asOf: document.getElementById("opt-asof").value };
+  try {
+    lastReport = window.runTool(inputEl.value, options);
+    outEl.textContent = lastReport;
+  } catch (e) {
+    lastReport = "ERROR: " + e.message + "\n";
+    outEl.textContent = lastReport;
+  }
+});
+document.getElementById("download").addEventListener("click", function () {
+  var text = lastReport || outEl.textContent;
+  var blob = new Blob([text], { type: "text/plain" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = "driver-qualification-report.txt";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+</script>
+</body>
+</html>

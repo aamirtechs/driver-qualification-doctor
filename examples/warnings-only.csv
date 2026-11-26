@@ -1,0 +1,4 @@
+driver_id,driver_name,cdl_number,cdl_expiry,medical_expiry,mvr_date,annual_review_date,road_test_date,prev_employer_inquiry_date,hire_date,dispatched
+D-401,Dan Cole,CDL-3001,2027-04-01,2026-12-10,2026-09-01,2026-08-01,2024-07-01,2026-03-20,2026-03-01,no
+D-402,Erin Fox,CDL-3002,2026-12-05,2027-03-01,2026-10-01,2026-09-01,2024-08-01,2026-05-01,2026-04-01,no
+D-403,Frank Hale,CDL-3003,2027-06-01,2026-11-25,2026-10-01,2026-09-01,2024-09-01,2026-05-20,2026-05-01,no

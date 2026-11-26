@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "driver-qualification-doctor"
+version = "1.0.0"
+description = "Audit a driver qualification file CSV export for missing DQ file items, expired CDL or medical certificates, a stale MVR, an overdue annual review, a late previous-employer inquiry, and drivers dispatched while expired"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+
+[project.scripts]
+driver-qualification-doctor = "driver_qualification_doctor:main_entry"
+
+[tool.setuptools]
+py-modules = ["driver_qualification_doctor"]
